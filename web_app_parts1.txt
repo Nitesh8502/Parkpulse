@@ -1,0 +1,140 @@
+import os
+import subprocess
+import time
+from pathlib import Path
+
+import cv2
+import numpy as np
+from flask import Flask, render_template, request, send_from_directory, url_for
+from werkzeug.utils import secure_filename
+
+from util import empty_or_not, get_parking_spots_bboxes
+
+
+ROOT = Path(__file__).resolve().parent
+UPLOAD_DIR = ROOT / "uploads"
+OUTPUT_DIR = ROOT / "outputs"
+MASK_PATH = ROOT / "mask_1920_1080.png"
+ALLOWED_EXTENSIONS = {"mp4", "mov", "avi", "mkv"}
+
+UPLOAD_DIR.mkdir(exist_ok=True)
+OUTPUT_DIR.mkdir(exist_ok=True)
+
+app = Flask(__name__)
+app.config["MAX_CONTENT_LENGTH"] = 1024 * 1024 * 1024  # 1 GB
+
+
+def calc_diff(im1, im2):
+    return np.abs(np.mean(im1) - np.mean(im2))
+
+
+def allowed_file(filename):
+    if "." not in filename:
+        return False
+    ext = filename.rsplit(".", 1)[1].lower()
+    return ext in ALLOWED_EXTENSIONS
+
+
+def process_video(input_video_path, output_video_path, mask_path, step=30):
+    mask = cv2.imread(str(mask_path), 0)
+    if mask is None:
+        raise FileNotFoundError(f"Mask file not found: {mask_path}")
+
+    cap = cv2.VideoCapture(str(input_video_path))
+    if not cap.isOpened():
+        raise FileNotFoundError(f"Unable to open video file: {input_video_path}")
+
+    connected_components = cv2.connectedComponentsWithStats(mask, 4, cv2.CV_32S)
+    spots = get_parking_spots_bboxes(connected_components)
+    mask_height, mask_width = mask.shape[:2]
+
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    if not np.isfinite(fps) or fps <= 0:
+        fps = 25
+
+    writer = None
+
+    spots_status = [None for _ in spots]
+    diffs = [0.0 for _ in spots]
+    previous_frame = None
+    frame_nmr = 0
+    last_available = 0
+    scaled_spots = spots
+
+    try:
+        while True:
+            ret, frame = cap.read()
+            if not ret or frame is None:
+                break
+
+            if writer is None:
+                frame_height, frame_width = frame.shape[:2]
+                scale_x = frame_width / mask_width
+                scale_y = frame_height / mask_height
+                scaled_spots = [
+                    [
+                        int(round(x1 * scale_x)),
+                        int(round(y1 * scale_y)),
+                        max(1, int(round(w * scale_x))),
+                        max(1, int(round(h * scale_y))),
+                    ]
+                    for x1, y1, w, h in spots
+                ]
+                # Use MJPEG codec which is widely compatible; save as AVI
+                fourcc = cv2.VideoWriter_fourcc(*"MJPG")
+                actual_output_path = str(output_video_path).rsplit('.', 1)[0] + '.avi'
+                writer = cv2.VideoWriter(
+                    actual_output_path,
+                    fourcc,
+                    fps,
+                    (int(frame_width), int(frame_height)),
+                )
+                if not writer.isOpened():
+                    raise RuntimeError(f"Unable to create output video: {actual_output_path}")
+
+            if frame_nmr % step == 0:
+                for spot_index, (x1, y1, w, h) in enumerate(scaled_spots):
+                    frame_h, frame_w = frame.shape[:2]
+                    x2 = min(frame_w, x1 + w)
+                    y2 = min(frame_h, y1 + h)
+                    x1_clamped = max(0, x1)
+                    y1_clamped = max(0, y1)
+
+                    if x1_clamped >= x2 or y1_clamped >= y2:
+                        continue
+
+                    spot_crop = frame[y1_clamped:y2, x1_clamped:x2, :]
+                    if spot_crop.size == 0:
+                        continue
+                    spots_status[spot_index] = empty_or_not(spot_crop)
+
+            for spot_index, (x1, y1, w, h) in enumerate(scaled_spots):
+                spot_status = spots_status[spot_index]
+                color = (0, 255, 0) if spot_status else (0, 0, 255)
+                frame = cv2.rectangle(frame, (x1, y1), (x1 + w, y1 + h), color, 2)
+
+            last_available = sum(bool(status) for status in spots_status)
+            total_spots = len(spots_status)
+
+            cv2.rectangle(frame, (70, 20), (600, 90), (18, 16, 22), -1)
+            cv2.putText(
+                frame,
+                f"Available spots: {last_available} / {total_spots}",
+                (90, 65),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                1,
+                (245, 246, 250),
+                2,
+            )
+
+            writer.write(frame)
+            frame_nmr += 1
+    finally:
+        cap.release()
+        if writer is not None:
+            writer.release()
+
+    if frame_nmr == 0:
+        raise RuntimeError("No frames were processed from the input video.")
+
+        # Convert AVI to MP4 using FFmpeg for browser compatibility

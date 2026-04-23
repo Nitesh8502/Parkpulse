@@ -1,0 +1,20 @@
+
+    result = {
+        "video_url": url_for("serve_output", filename=output_name),
+        "download_url": url_for("serve_output", filename=output_name),
+        "available": stats["available"],
+        "total": stats["total"],
+        "processed_frames": stats["processed_frames"],
+        "file_name": output_name,
+    }
+
+    return render_template("index.html", result=result, error=None)
+
+
+@app.route("/outputs/<path:filename>")
+def serve_output(filename):
+    return send_from_directory(OUTPUT_DIR, filename, as_attachment=False)
+
+
+if __name__ == "__main__":
+    app.run(debug=True)

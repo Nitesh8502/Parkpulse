@@ -1,0 +1,873 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ParkPulse | Smart Parking Counter</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=Sora:wght@400;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link
+      rel="stylesheet"
+      href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+      crossorigin=""
+    />
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}" />
+  </head>
+  <body>
+    <div class="ambient ambient-top"></div>
+    <div class="ambient ambient-bottom"></div>
+
+    <main class="page">
+      <section class="hero">
+        <p class="eyebrow">Parking Space Intelligence</p>
+        <h1>ParkPulse Dashboard</h1>
+        <p class="subhead">
+          Upload a parking lot video and get an annotated result with live slot occupancy overlays.
+        </p>
+      </section>
+
+      <section class="panel">
+        <div class="workflow-hint" role="note" aria-label="Workflow guide">
+          <span><strong>1.</strong> Upload and process a video.</span>
+          <span><strong>2.</strong> Pick an available slot to book.</span>
+          <span><strong>3.</strong> Track countdown until auto-release.</span>
+        </div>
+        <p id="uiNotice" class="ui-notice hidden" role="status" aria-live="polite"></p>
+
+        <div class="section-header-row">
+          <h3>Video Upload</h3>
+          <button type="button" class="section-toggle" data-target="uploadSection" aria-expanded="true" aria-label="Toggle Video Upload section" title="Video Upload">▾</button>
+        </div>
+        <div id="uploadSection">
+          <form id="uploadForm" action="/process" method="post" enctype="multipart/form-data">
+            <label for="video" class="input-label">Choose CCTV-style parking video</label>
+            <input id="video" name="video" type="file" accept="video/*" required />
+            <p id="selectedFileLabel" class="input-meta">No file selected yet.</p>
+            <button id="submitBtn" type="submit" class="primary-btn">Process Video</button>
+            {% if result %}
+            <button id="endSessionBtn" type="button" class="secondary-btn">End Session &amp; Start New Upload</button>
+            {% endif %}
+          </form>
+        </div>
+
+        <div class="live-panel">
+          <div class="live-head">
+            <div class="section-header-row compact">
+              <h3>Live Stream Mode</h3>
+              <button type="button" class="section-toggle" data-target="liveSection" aria-expanded="false" aria-label="Toggle Live Stream section" title="Live Stream">▸</button>
+            </div>
+            <p>Watch real-time occupancy from sample streams.</p>
+          </div>
+          <div id="liveSection" class="is-collapsed">
+            <div class="live-actions">
+              <button id="startLiveFull" type="button" class="secondary-btn">Start Full Stream</button>
+              <button id="startLiveCrop" type="button" class="secondary-btn">Start Crop Stream</button>
+              <button id="stopLive" type="button" class="secondary-btn">Stop</button>
+            </div>
+            <div class="live-stats">
+              <span>Live Available: <strong id="liveAvailable">-</strong></span>
+              <span>Total: <strong id="liveTotal">-</strong></span>
+              <span>Frame: <strong id="liveFrame">-</strong></span>
+            </div>
+            <div class="live-view">
+              <img id="liveFeedImage" alt="Live parking feed" />
+            </div>
+          </div>
+        </div>
+
+        <div class="lot-panel">
+          <div class="lot-panel-head">
+            <div>
+              <div class="section-header-row compact">
+                <h3>Parking Lot Registry</h3>
+                <button type="button" class="section-toggle" data-target="lotSection" aria-expanded="false" aria-label="Toggle Parking Lot Registry section" title="Parking Lot Registry">▸</button>
+              </div>
+              <p class="lot-subhead">Click a marker to inspect a lot, or add a new parking location on the map.</p>
+            </div>
+          </div>
+          <div id="lotSection" class="is-collapsed">
+            <form id="lotForm" class="lot-form">
+              <div class="lot-form-grid">
+                <label>
+                  <span>Lot Name</span>
+                  <input name="name" type="text" placeholder="Airport North Lot" required />
+                </label>
+                <label>
+                  <span>Address</span>
+                  <input name="address" type="text" placeholder="Main Road / District" required />
+                </label>
+                <label>
+                  <span>Capacity</span>
+                  <input name="capacity" type="number" min="1" value="50" required />
+                </label>
+                <label>
+                  <span>Layout Mask</span>
+                  <select name="mask_name">
+                    <option value="">No linked layout</option>
+                    <option value="mask_1920_1080.png">mask_1920_1080.png</option>
+                    <option value="mask_crop.png">mask_crop.png</option>
+                  </select>
+                </label>
+                <label>
+                  <span>Latitude</span>
+                  <input name="latitude" type="number" step="0.0001" value="28.6139" required />
+                </label>
+                <label>
+                  <span>Longitude</span>
+                  <input name="longitude" type="number" step="0.0001" value="77.2090" required />
+                </label>
+                <label>
+                  <span>Marker Color</span>
+                  <input name="color" type="color" value="#f06a42" />
+                </label>
+              </div>
+              <button id="addLotBtn" type="submit" class="primary-btn">Add Parking Lot</button>
+            </form>
+
+            <div class="lot-map-layout">
+              <div id="parkingLotMap" class="india-map" data-parking-lots='{{ parking_lots | tojson }}'></div>
+              <aside id="lotDetails" class="lot-details"></aside>
+            </div>
+          </div>
+        </div>
+
+        {% if error %}
+        <p class="error">{{ error }}</p>
+        {% endif %}
+
+        <div id="loading" class="loading hidden">
+          <div class="pulse"></div>
+          <p>Analyzing parking spaces. This can take a little while for longer videos.</p>
+        </div>
+      </section>
+
+      {% if result %}
+      <section id="resultsSectionRoot" class="results reveal">
+        <div class="section-header-row">
+          <h3>Detection Summary</h3>
+          <button type="button" class="section-toggle" data-target="statsSection" aria-expanded="false" aria-label="Toggle Detection Summary section" title="Detection Summary">▸</button>
+        </div>
+        <div id="statsSection" class="stats-grid is-collapsed">
+          <article class="stat-card">
+            <p>Available Spots</p>
+            <h2 id="availableSpotsValue">{{ result.available }}</h2>
+          </article>
+          <article class="stat-card">
+            <p>Total Spots</p>
+            <h2>{{ result.total }}</h2>
+          </article>
+          <article class="stat-card">
+            <p>Frames Processed</p>
+            <h2>{{ result.processed_frames }}</h2>
+          </article>
+        </div>
+
+        <div class="section-header-row">
+          <h3>Spot Booking Map</h3>
+          <button type="button" class="section-toggle" data-target="bookingSection" aria-expanded="false" aria-label="Toggle Spot Booking Map section" title="Spot Booking Map">▸</button>
+        </div>
+        <div id="bookingSection" class="is-collapsed">
+          <div class="map-panel">
+            <div class="map-header">
+              <div>
+                <p class="map-kicker">Interactive Parking Map</p>
+                <h3>Click an empty spot to pay and confirm booking</h3>
+              </div>
+              <div class="map-summary">
+                <span><strong id="bookedCount">0</strong> booked</span>
+                <span><strong id="mapAvailable">{{ result.available }}</strong> available</span>
+              </div>
+            </div>
+            <div
+              id="parkingMap"
+              class="parking-map"
+              data-statuses='{{ result.spot_statuses | tojson }}'
+              data-mask-name="{{ result.mask_name }}"
+            ></div>
+            <p class="map-note">Bookings are persisted on the server for this parking layout and shared across sessions.</p>
+            <p id="paymentMessage" class="payment-message hidden"></p>
+
+            <div id="paymentModal" class="payment-modal hidden" aria-hidden="true">
+              <div class="payment-card">
+                <div class="payment-head">
+                  <h4>Pay To Confirm Slot</h4>
+                  <button type="button" id="closePaymentModal" class="payment-close" aria-label="Close payment dialog">x</button>
+                </div>
+                <p id="paymentSpotLabel" class="payment-spot-label"></p>
+                <form id="paymentForm" class="payment-form">
+                  <label>
+                    <span>Vehicle Number</span>
+                    <input name="vehicle_number" type="text" placeholder="KA01AB1234" required />
+                  </label>
+                  <label>
+                    <span>Duration (Hours)</span>
+                    <select name="duration_hours" required>
+                      <option value="1">1 hour</option>
+                      <option value="2">2 hours</option>
+                      <option value="3">3 hours</option>
+                      <option value="4">4 hours</option>
+                      <option value="8">8 hours</option>
+                    </select>
+                  </label>
+                  <label>
+                    <span>Payment Method</span>
+                    <select name="provider" required>
+                      <option value="stripe">Stripe Checkout (Cards + UPI where available)</option>
+                      <option value="mock">Demo Gateway (No real charge)</option>
+                    </select>
+                  </label>
+                  <p id="paymentPriceNote" class="payment-price-note">Rate: Rs.40/hour</p>
+                  <button id="payNowBtn" type="submit" class="primary-btn">Pay Now</button>
+                </form>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="section-header-row">
+          <h3>Annotated Video</h3>
+          <button type="button" class="section-toggle" data-target="videoSection" aria-expanded="false" aria-label="Toggle Annotated Video section" title="Annotated Video">▸</button>
+        </div>
+        <div id="videoSection" class="video-wrap is-collapsed">
+          <video controls preload="metadata" src="{{ result.video_url }}"></video>
+          <a class="secondary-btn" href="{{ result.download_url }}" download="{{ result.file_name }}">Download Annotated Video</a>
+        </div>
+      </section>
+      {% endif %}
+    </main>
+
+    <script
+      src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+      crossorigin=""
+    ></script>
+
+    <script>
+      const form = document.getElementById("uploadForm");
+      const videoInput = document.getElementById("video");
+      const selectedFileLabel = document.getElementById("selectedFileLabel");
+      const loading = document.getElementById("loading");
+      const submitBtn = document.getElementById("submitBtn");
+      const uiNotice = document.getElementById("uiNotice");
+      const parkingMap = document.getElementById("parkingMap");
+      const bookedCount = document.getElementById("bookedCount");
+      const mapAvailable = document.getElementById("mapAvailable");
+      const availableSpotsValue = document.getElementById("availableSpotsValue");
+      const liveFeedImage = document.getElementById("liveFeedImage");
+      const startLiveFull = document.getElementById("startLiveFull");
+      const startLiveCrop = document.getElementById("startLiveCrop");
+      const stopLive = document.getElementById("stopLive");
+      const liveAvailable = document.getElementById("liveAvailable");
+      const liveTotal = document.getElementById("liveTotal");
+      const liveFrame = document.getElementById("liveFrame");
+      const endSessionBtn = document.getElementById("endSessionBtn");
+      let livePollTimer = null;
+      const lotForm = document.getElementById("lotForm");
+      const addLotBtn = document.getElementById("addLotBtn");
+      const parkingLotMap = document.getElementById("parkingLotMap");
+      const lotDetails = document.getElementById("lotDetails");
+      const sectionToggles = document.querySelectorAll(".section-toggle");
+      let parkingLots = [];
+      let selectedLotId = null;
+      let indiaMap = null;
+      let lotMarkers = [];
+
+      const showNotice = (text, isError = false) => {
+        if (!uiNotice) return;
+        uiNotice.classList.remove("hidden", "notice-error", "notice-info");
+        uiNotice.classList.add(isError ? "notice-error" : "notice-info");
+        uiNotice.textContent = text;
+      };
+
+      const updateSelectedFileState = () => {
+        if (!videoInput || !submitBtn || !selectedFileLabel) return;
+        const file = videoInput.files?.[0];
+        if (!file) {
+          selectedFileLabel.textContent = "No file selected yet.";
+          submitBtn.disabled = true;
+          return;
+        }
+        selectedFileLabel.textContent = `Selected: ${file.name}`;
+        submitBtn.disabled = false;
+      };
+
+      updateSelectedFileState();
+      if (videoInput) {
+        videoInput.addEventListener("change", updateSelectedFileState);
+      }
+
+      form.addEventListener("submit", (event) => {
+        if (!videoInput?.files?.length) {
+          event.preventDefault();
+          showNotice("Please select a video before clicking Process Video.", true);
+          return;
+        }
+        loading.classList.remove("hidden");
+        submitBtn.disabled = true;
+        submitBtn.textContent = "Processing...";
+        showNotice("Processing started. Please wait while we analyze parking spots.");
+      });
+
+      sectionToggles.forEach((button) => {
+        const targetId = button.dataset.target;
+        const target = document.getElementById(targetId);
+        if (target) {
+          const initiallyCollapsed = target.classList.contains("is-collapsed");
+          button.setAttribute("aria-expanded", String(!initiallyCollapsed));
+          button.classList.toggle("toggle-collapsed", initiallyCollapsed);
+          button.textContent = initiallyCollapsed ? "▸" : "▾";
+        }
+
+        button.addEventListener("click", () => {
+          const currentTargetId = button.dataset.target;
+          const target = document.getElementById(currentTargetId);
+          if (!target) return;
+
+          const collapsed = target.classList.toggle("is-collapsed");
+          button.setAttribute("aria-expanded", String(!collapsed));
+          button.classList.toggle("toggle-collapsed", collapsed);
+          button.textContent = collapsed ? "▸" : "▾";
+
+          if (!collapsed && currentTargetId === "lotSection" && indiaMap) {
+            setTimeout(() => indiaMap.invalidateSize(), 80);
+          }
+        });
+      });
+
+      if (parkingMap) {
+        const statuses = JSON.parse(parkingMap.dataset.statuses || "[]");
+        const maskName = parkingMap.dataset.maskName || "";
+        const booked = new Set();
+        const bookingRemainingBySpot = new Map();
+        let bookingCountdownTimer = null;
+        
+        // Payment modal elements - only get them if they exist
+        const paymentModal = document.getElementById("paymentModal");
+        const paymentForm = document.getElementById("paymentForm");
+        const closePaymentModal = document.getElementById("closePaymentModal");
+        const payNowBtn = document.getElementById("payNowBtn");
+        const paymentSpotLabel = document.getElementById("paymentSpotLabel");
+        const paymentMessage = document.getElementById("paymentMessage");
+        const paymentPriceNote = document.getElementById("paymentPriceNote");
+        let pendingSpotIndex = null;
+
+        const HOURLY_RATE_PAISE = 4000;
+        const STRIPE_MIN_PAISE = 5000;
+
+        const showPaymentMessage = (text, isError = false) => {
+          if (!paymentMessage) return;
+          paymentMessage.classList.remove("hidden", "payment-success", "payment-error");
+          paymentMessage.classList.add(isError ? "payment-error" : "payment-success");
+          paymentMessage.textContent = text;
+        };
+
+        const closePaymentDialog = () => {
+          if (!paymentModal) return;
+          paymentModal.classList.add("hidden");
+          paymentModal.setAttribute("aria-hidden", "true");
+          pendingSpotIndex = null;
+          if (paymentForm) {
+            paymentForm.reset();
+          }
+        };
+
+        const openPaymentDialog = (spotIndex) => {
+          if (!paymentModal || !paymentSpotLabel) return;
+          pendingSpotIndex = spotIndex;
+          paymentSpotLabel.textContent = `Slot #${spotIndex + 1}`;
+          paymentModal.classList.remove("hidden");
+          paymentModal.setAttribute("aria-hidden", "false");
+        };
+
+        const refreshPriceHint = () => {
+          if (!paymentForm || !paymentPriceNote) return;
+          const provider = String(paymentForm.elements.provider?.value || "mock");
+          const durationHours = Number(paymentForm.elements.duration_hours?.value || 1);
+          const amountRupees = ((durationHours * HOURLY_RATE_PAISE) / 100).toFixed(2);
+
+          if (provider === "stripe" && durationHours * HOURLY_RATE_PAISE < STRIPE_MIN_PAISE) {
+            paymentPriceNote.textContent =
+              `Rate: Rs.40/hour. Stripe requires at least Rs.50 (choose 2+ hours). Current: Rs.${amountRupees}`;
+          } else {
+            paymentPriceNote.textContent = `Rate: Rs.40/hour. Current: Rs.${amountRupees}`;
+          }
+        };
+
+        const formatRemaining = (seconds) => {
+          if (seconds === null || seconds === undefined) return "";
+          const safeSeconds = Math.max(0, Number(seconds));
+          const hrs = Math.floor(safeSeconds / 3600);
+          const mins = Math.floor((safeSeconds % 3600) / 60);
+          const secs = safeSeconds % 60;
+          return `${String(hrs).padStart(2, "0")}:${String(mins).padStart(2, "0")}:${String(secs).padStart(2, "0")}`;
+        };
+
+        const renderMap = () => {
+          parkingMap.innerHTML = statuses
+            .map((isEmpty, index) => {
+              const isBooked = booked.has(index);
+              const stateClass = !isEmpty ? "spot-occupied" : isBooked ? "spot-booked" : "spot-empty";
+              const remaining = bookingRemainingBySpot.get(index);
+              const label = !isEmpty
+                ? "Occupied"
+                : isBooked
+                  ? remaining !== undefined
+                    ? `Booked ${formatRemaining(remaining)}`
+                    : "Booked"
+                  : "Available";
+              return `
+                <button type="button" class="parking-spot ${stateClass}" data-index="${index}" data-empty="${isEmpty}">
+                  <span>#${index + 1}</span>
+                  <small>${label}</small>
+                </button>
+              `;
+            })
+            .join("");
+
+          bookedCount.textContent = String(booked.size);
+          const availableLeft = Math.max(0, statuses.filter(Boolean).length - booked.size);
+          mapAvailable.textContent = String(availableLeft);
+          if (availableSpotsValue) {
+            availableSpotsValue.textContent = String(availableLeft);
+          }
+        };
+
+        const loadBookings = async () => {
+          const response = await fetch(`/api/bookings?mask_name=${encodeURIComponent(maskName)}`);
+          if (!response.ok) return;
+          const data = await response.json();
+          booked.clear();
+          bookingRemainingBySpot.clear();
+          (data.bookings || []).forEach((entry) => {
+            const idx = Number(entry.spot_index);
+            booked.add(idx);
+            if (entry.remaining_seconds !== null && entry.remaining_seconds !== undefined) {
+              bookingRemainingBySpot.set(idx, Number(entry.remaining_seconds));
+            }
+          });
+
+          if (!data.bookings) {
+            (data.booked_indices || []).forEach((idx) => booked.add(Number(idx)));
+          }
+          renderMap();
+        };
+
+        const tickBookingCountdown = () => {
+          let changed = false;
+          for (const [spotIndex, remaining] of bookingRemainingBySpot.entries()) {
+            const next = Math.max(0, Number(remaining) - 1);
+            if (next <= 0) {
+              bookingRemainingBySpot.delete(spotIndex);
+              booked.delete(spotIndex);
+              changed = true;
+              continue;
+            }
+            bookingRemainingBySpot.set(spotIndex, next);
+            changed = true;
+          }
+          if (changed) {
+            renderMap();
+          }
+        };
+
+        const toggleBooking = async (spotIndex, isEmpty) => {
+          if (!isEmpty) return;
+
+          const isBooked = booked.has(spotIndex);
+          if (isBooked) {
+            const response = await fetch("/api/bookings/book", {
+              method: "DELETE",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                mask_name: maskName,
+                spot_index: spotIndex,
+                spot_empty: isEmpty,
+              }),
+            });
+
+            if (!response.ok) {
+              const err = await response.json().catch(() => ({}));
+              showPaymentMessage(err.error || "Cancel booking failed.", true);
+              return;
+            }
+
+            const payload = await response.json();
+            booked.clear();
+            (payload.booked_indices || []).forEach((idx) => booked.add(Number(idx)));
+            renderMap();
+            showPaymentMessage(`Booking removed for Slot #${spotIndex + 1}.`);
+            return;
+          }
+
+          openPaymentDialog(spotIndex);
+        };
+
+        parkingMap.addEventListener("click", async (event) => {
+          const spot = event.target.closest(".parking-spot");
+          if (!spot) return;
+          const index = Number(spot.dataset.index);
+          const isEmpty = spot.dataset.empty === "true";
+          await toggleBooking(index, isEmpty);
+        });
+
+        renderMap();
+        loadBookings();
+        bookingCountdownTimer = setInterval(tickBookingCountdown, 1000);
+        const bookingSyncTimer = setInterval(loadBookings, 10000);
+        window.addEventListener("beforeunload", () => {
+          clearInterval(bookingSyncTimer);
+          if (bookingCountdownTimer) {
+            clearInterval(bookingCountdownTimer);
+          }
+        });
+
+        // Set up payment modal event listeners ONLY if elements exist
+        if (closePaymentModal && paymentModal) {
+          closePaymentModal.addEventListener("click", (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            closePaymentDialog();
+          });
+        }
+
+        if (paymentModal) {
+          paymentModal.addEventListener("click", (event) => {
+            if (event.target === paymentModal) {
+              closePaymentDialog();
+            }
+          });
+        }
+
+        if (paymentForm && payNowBtn) {
+          paymentForm.elements.provider?.addEventListener("change", refreshPriceHint);
+          paymentForm.elements.duration_hours?.addEventListener("change", refreshPriceHint);
+          refreshPriceHint();
+
+          paymentForm.addEventListener("submit", async (event) => {
+            event.preventDefault();
+            if (pendingSpotIndex === null) return;
+
+            payNowBtn.disabled = true;
+            payNowBtn.textContent = "Processing payment...";
+
+            const formData = new FormData(paymentForm);
+            const vehicleNumber = String(formData.get("vehicle_number") || "").trim();
+            const durationHours = Number(formData.get("duration_hours"));
+            const provider = String(formData.get("provider") || "mock");
+
+            if (provider === "stripe" && durationHours * HOURLY_RATE_PAISE < STRIPE_MIN_PAISE) {
+              showPaymentMessage("Stripe requires at least Rs.50. Please select at least 2 hours.", true);
+              payNowBtn.disabled = false;
+              payNowBtn.textContent = "Pay Now";
+              return;
+            }
+
+            try {
+              const response = await fetch("/api/bookings/pay", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  mask_name: maskName,
+                  spot_index: pendingSpotIndex,
+                  spot_empty: true,
+                  vehicle_number: vehicleNumber,
+                  duration_hours: durationHours,
+                  provider,
+                }),
+              });
+
+              if (!response.ok) {
+                const err = await response.json().catch(() => ({}));
+                showPaymentMessage(err.error || "Payment failed.", true);
+                return;
+              }
+
+              const payload = await response.json();
+
+              if (provider === "stripe") {
+                if (payload.requires_redirect && payload.checkout_url) {
+                  showPaymentMessage("Redirecting to Stripe Checkout...");
+                  window.location.href = payload.checkout_url;
+                  return;
+                }
+                showPaymentMessage("Stripe checkout could not be started.", true);
+                return;
+              }
+
+              booked.clear();
+              (payload.booked_indices || []).forEach((idx) => booked.add(Number(idx)));
+              renderMap();
+
+              const amountText = payload.payment?.amount_display || "Rs.0.00";
+              const ref = payload.payment?.transaction_ref || "-";
+              showPaymentMessage(
+                `Payment successful for Slot #${pendingSpotIndex + 1}. Amount ${amountText}. Ref: ${ref}`
+              );
+              closePaymentDialog();
+            } catch (err) {
+              showPaymentMessage("Network error while creating payment. Please try again.", true);
+            } finally {
+              payNowBtn.disabled = false;
+              payNowBtn.textContent = "Pay Now";
+            }
+          });
+        }
+      }
+
+      const stopLiveStream = () => {
+        if (livePollTimer) {
+          clearInterval(livePollTimer);
+          livePollTimer = null;
+        }
+        if (liveFeedImage) {
+          liveFeedImage.removeAttribute("src");
+        }
+      };
+
+      const startLiveStream = (source) => {
+        stopLiveStream();
+        if (!liveFeedImage) return;
+
+        liveFeedImage.src = `/live_feed?source=${encodeURIComponent(source)}&t=${Date.now()}`;
+
+        livePollTimer = setInterval(async () => {
+          const response = await fetch("/api/live_status").catch(() => null);
+          if (!response || !response.ok) return;
+          const data = await response.json();
+          liveAvailable.textContent = String(data.available ?? "-");
+          liveTotal.textContent = String(data.total ?? "-");
+          liveFrame.textContent = String(data.frame ?? "-");
+        }, 700);
+      };
+
+      if (startLiveFull) {
+        startLiveFull.addEventListener("click", () => startLiveStream("full"));
+      }
+
+      if (startLiveCrop) {
+        startLiveCrop.addEventListener("click", () => startLiveStream("crop"));
+      }
+
+      if (stopLive) {
+        stopLive.addEventListener("click", stopLiveStream);
+      }
+
+      if (parkingLotMap && lotDetails) {
+        parkingLots = JSON.parse(parkingLotMap.dataset.parkingLots || "[]");
+        const visibleLots = parkingLots.filter((lot) => lot.visible_on_map !== false);
+        selectedLotId = visibleLots[0]?.id ?? null;
+
+        const renderLotDetails = (lot) => {
+          if (!lot) {
+            lotDetails.innerHTML = `
+              <div class="lot-details-empty">
+                <p>Select a lot marker to view details.</p>
+              </div>
+            `;
+            return;
+          }
+
+          const previewCount = Math.min(Number(lot.capacity || 0), 24);
+          const bookedPreview = Math.min(Number(lot.booked_count || 0), previewCount);
+          const previewSpaces = Array.from({ length: previewCount }, (_, index) =>
+            index < bookedPreview ? "occupied" : "empty"
+          );
+          const extraSpaces = Math.max(Number(lot.capacity || 0) - previewCount, 0);
+
+          lotDetails.innerHTML = `
+            <div class="lot-details-card">
+              <p class="map-kicker">Selected Lot</p>
+              <h4>${lot.name}</h4>
+              <p>${lot.address}</p>
+              <button type="button" class="lot-focus-btn" data-focus-lot="${lot.id}">Focus on map</button>
+              <div class="lot-details-meta">
+                <span>Capacity: <strong>${lot.capacity}</strong></span>
+                <span>Booked: <strong>${lot.booked_count}</strong></span>
+                <span>Available: <strong>${lot.available_count}</strong></span>
+                <span>Layout: <strong>${lot.mask_name || "None"}</strong></span>
+                <span>Coordinates: <strong>${lot.latitude?.toFixed?.(4) ?? "-"}, ${lot.longitude?.toFixed?.(4) ?? "-"}</strong></span>
+              </div>
+              <div class="lot-space-section">
+                <div class="lot-space-title">
+                  <span>Spaces in this lot</span>
+                  <small>${previewCount} shown</small>
+                </div>
+                <div class="lot-space-grid">
+                  ${previewSpaces
+                    .map((state, index) => `<span class="lot-space ${state}">P${index + 1}</span>`)
+                    .join("")}
+                </div>
+                ${extraSpaces > 0 ? `<p class="lot-space-note">+${extraSpaces} more spaces</p>` : ""}
+              </div>
+            </div>
+          `;
+        };
+
+        const renderLots = () => {
+          const visibleLots = parkingLots.filter((lot) => lot.visible_on_map !== false);
+          if (!indiaMap) {
+            indiaMap = L.map("parkingLotMap", {
+              zoomControl: true,
+              scrollWheelZoom: true,
+            }).setView([22.5, 79.0], 5);
+
+            L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+              maxZoom: 19,
+              attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+            }).addTo(indiaMap);
+          }
+
+          lotMarkers.forEach((marker) => marker.remove());
+          lotMarkers = [];
+
+          visibleLots.forEach((lot) => {
+            if (typeof lot.latitude !== "number" || typeof lot.longitude !== "number") return;
+            const marker = L.circleMarker([lot.latitude, lot.longitude], {
+              radius: selectedLotId === lot.id ? 14 : 11,
+              color: lot.color,
+              weight: 3,
+              fillColor: lot.color,
+              fillOpacity: 0.92,
+            }).addTo(indiaMap);
+
+            marker.bindPopup(`
+              <strong>${lot.name}</strong><br />
+              ${lot.address}<br />
+              Available: ${lot.available_count} / ${lot.capacity}
+            `);
+
+            marker.on("click", () => {
+              selectedLotId = lot.id;
+              indiaMap.flyTo([lot.latitude, lot.longitude], Math.max(indiaMap.getZoom(), 6), {
+                animate: true,
+                duration: 0.8,
+              });
+              renderLots();
+            });
+
+            lotMarkers.push(marker);
+          });
+
+          renderLotDetails(visibleLots.find((lot) => lot.id === selectedLotId) || visibleLots[0] || null);
+          if (indiaMap) {
+            setTimeout(() => indiaMap.invalidateSize(), 0);
+          }
+        };
+
+        lotDetails.addEventListener("click", (event) => {
+          const focusButton = event.target.closest("[data-focus-lot]");
+          if (!focusButton || !indiaMap) return;
+
+          const lotId = Number(focusButton.dataset.focusLot);
+          const lot = parkingLots.find((entry) => entry.id === lotId);
+          if (!lot || typeof lot.latitude !== "number" || typeof lot.longitude !== "number") return;
+
+          selectedLotId = lot.id;
+          indiaMap.flyTo([lot.latitude, lot.longitude], Math.max(indiaMap.getZoom(), 6), {
+            animate: true,
+            duration: 0.8,
+          });
+          renderLots();
+        });
+
+        renderLots();
+
+        lotForm.addEventListener("submit", async (event) => {
+          event.preventDefault();
+          addLotBtn.disabled = true;
+          addLotBtn.textContent = "Adding...";
+
+          const formData = new FormData(lotForm);
+          const payload = Object.fromEntries(formData.entries());
+
+          const response = await fetch("/api/parking_lots", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+          });
+
+          addLotBtn.disabled = false;
+          addLotBtn.textContent = "Add Parking Lot";
+
+          if (!response.ok) {
+            const err = await response.json().catch(() => ({}));
+            showNotice(err.error || "Could not add parking lot.", true);
+            return;
+          }
+
+          const data = await response.json();
+          parkingLots = data.parking_lots || [];
+          selectedLotId = data.lot_id;
+          renderLots();
+          showNotice("Parking lot added successfully.");
+          if (indiaMap) {
+            indiaMap.setView([22.5, 79.0], 5);
+          }
+        });
+      }
+
+      const hasProcessedResult = {{ "true" if result else "false" }};
+      const isFreshResult = {{ "true" if fresh_result else "false" }};
+      if (endSessionBtn) {
+        endSessionBtn.addEventListener("click", async () => {
+          endSessionBtn.disabled = true;
+          endSessionBtn.textContent = "Ending session...";
+          try {
+            const response = await fetch("/api/session/end", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+            });
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok) {
+              showNotice(payload.error || "Could not end session. Please try again.", true);
+              endSessionBtn.disabled = false;
+              endSessionBtn.textContent = "End Session & Start New Upload";
+              return;
+            }
+            window.location.href = "/";
+          } catch (_err) {
+            showNotice("Network error while ending session. Please try again.", true);
+            endSessionBtn.disabled = false;
+            endSessionBtn.textContent = "End Session & Start New Upload";
+          }
+        });
+      }
+
+      if (hasProcessedResult) {
+        window.addEventListener("load", () => {
+          if (isFreshResult) {
+            const statsSection = document.getElementById("statsSection");
+            const statsToggle = document.querySelector('.section-toggle[data-target="statsSection"]');
+            if (statsSection && statsSection.classList.contains("is-collapsed")) {
+              statsSection.classList.remove("is-collapsed");
+            }
+            if (statsToggle) {
+              statsToggle.setAttribute("aria-expanded", "true");
+              statsToggle.classList.remove("toggle-collapsed");
+              statsToggle.textContent = "▾";
+            }
+
+            const bookingSection = document.getElementById("bookingSection");
+            const bookingToggle = document.querySelector('.section-toggle[data-target="bookingSection"]');
+            if (bookingSection && bookingSection.classList.contains("is-collapsed")) {
+              bookingSection.classList.remove("is-collapsed");
+            }
+            if (bookingToggle) {
+              bookingToggle.setAttribute("aria-expanded", "true");
+              bookingToggle.classList.remove("toggle-collapsed");
+              bookingToggle.textContent = "▾";
+            }
+          }
+
+          const resultsSection = document.getElementById("resultsSectionRoot");
+          if (resultsSection) {
+            resultsSection.scrollIntoView({ behavior: "smooth", block: "start" });
+          }
+        });
+      }
+    </script>
+  </body>
+</html>

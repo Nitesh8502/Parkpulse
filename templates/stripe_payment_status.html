@@ -1,0 +1,208 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ParkPulse | Payment Status</title>
+    <style>
+      :root {
+        --bg: #0f172a;
+        --panel: #111827;
+        --text: #e5e7eb;
+        --muted: #94a3b8;
+        --ok: #16a34a;
+        --err: #dc2626;
+        --wait: #f59e0b;
+        --link: #38bdf8;
+      }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+        background: radial-gradient(circle at 20% 10%, #1e293b 0%, var(--bg) 60%);
+        color: var(--text);
+        font-family: "Space Grotesk", sans-serif;
+      }
+      .card {
+        width: min(92vw, 640px);
+        background: color-mix(in srgb, var(--panel) 88%, black);
+        border: 1px solid #1f2937;
+        border-radius: 16px;
+        padding: 24px;
+        box-shadow: 0 18px 45px rgba(0, 0, 0, 0.4);
+      }
+      h1 {
+        margin: 0 0 10px;
+        font-size: 1.6rem;
+      }
+      .muted {
+        color: var(--muted);
+      }
+      .status {
+        margin: 16px 0;
+        font-size: 1.06rem;
+        line-height: 1.4;
+      }
+      .status.ok {
+        color: var(--ok);
+      }
+      .status.err {
+        color: var(--err);
+      }
+      .status.wait {
+        color: var(--wait);
+      }
+      .meta {
+        margin-top: 14px;
+        padding: 14px;
+        border-radius: 12px;
+        background: #0b1220;
+        border: 1px solid #1f2937;
+      }
+      .meta p {
+        margin: 6px 0;
+      }
+      .actions {
+        margin-top: 18px;
+        display: flex;
+        gap: 14px;
+        flex-wrap: wrap;
+      }
+      a {
+        color: var(--link);
+        text-decoration: none;
+      }
+      a:hover {
+        text-decoration: underline;
+      }
+    </style>
+  </head>
+  <body>
+    <main class="card">
+      <h1>Checking payment status</h1>
+      <p class="muted">Session: <span id="sessionId"></span></p>
+      <p id="statusText" class="status wait">Contacting payment gateway...</p>
+
+      <section id="meta" class="meta" hidden>
+        <p><strong>Slot:</strong> <span id="slotLabel">-</span></p>
+        <p><strong>Vehicle:</strong> <span id="vehicleNumber">-</span></p>
+        <p><strong>Duration:</strong> <span id="durationHours">-</span> hour(s)</p>
+        <p><strong>Amount:</strong> <span id="amountDisplay">-</span></p>
+        <p><strong>Booking:</strong> <span id="bookingState">-</span></p>
+        <p><strong>Time Remaining:</strong> <span id="timeRemaining">-</span></p>
+        <p><strong>Stripe Status:</strong> <span id="stripeStatus">-</span></p>
+      </section>
+
+      <div class="actions">
+        <a href="/">Back to active dashboard session</a>
+      </div>
+    </main>
+
+    <script>
+      const sessionId = new URLSearchParams(window.location.search).get("session_id") || "";
+      const statusText = document.getElementById("statusText");
+      const sessionEl = document.getElementById("sessionId");
+      const meta = document.getElementById("meta");
+      const slotLabel = document.getElementById("slotLabel");
+      const vehicleNumber = document.getElementById("vehicleNumber");
+      const durationHours = document.getElementById("durationHours");
+      const amountDisplay = document.getElementById("amountDisplay");
+      const bookingState = document.getElementById("bookingState");
+      const timeRemaining = document.getElementById("timeRemaining");
+      const stripeStatus = document.getElementById("stripeStatus");
+      let localRemainingSeconds = null;
+      let countdownTimer = null;
+
+      sessionEl.textContent = sessionId || "missing";
+
+      const setStatus = (text, kind) => {
+        statusText.textContent = text;
+        statusText.classList.remove("ok", "err", "wait");
+        statusText.classList.add(kind);
+      };
+
+      const formatRemaining = (seconds) => {
+        if (seconds === null || seconds === undefined) return "Not applicable";
+        if (seconds <= 0) return "00:00:00";
+        const hrs = Math.floor(seconds / 3600);
+        const mins = Math.floor((seconds % 3600) / 60);
+        const secs = seconds % 60;
+        return `${String(hrs).padStart(2, "0")}:${String(mins).padStart(2, "0")}:${String(secs).padStart(2, "0")}`;
+      };
+
+      const startLocalCountdown = () => {
+        if (countdownTimer) {
+          clearInterval(countdownTimer);
+          countdownTimer = null;
+        }
+        if (localRemainingSeconds === null || localRemainingSeconds === undefined) {
+          timeRemaining.textContent = "Not applicable";
+          return;
+        }
+        timeRemaining.textContent = formatRemaining(localRemainingSeconds);
+        countdownTimer = setInterval(() => {
+          if (localRemainingSeconds === null || localRemainingSeconds === undefined) return;
+          localRemainingSeconds = Math.max(0, Number(localRemainingSeconds) - 1);
+          timeRemaining.textContent = formatRemaining(localRemainingSeconds);
+        }, 1000);
+      };
+
+      const renderPayload = (payload) => {
+        meta.hidden = false;
+        slotLabel.textContent = payload.payment?.spot_label || "-";
+        vehicleNumber.textContent = payload.payment?.vehicle_number || "-";
+        durationHours.textContent = String(payload.payment?.duration_hours ?? "-");
+        amountDisplay.textContent = payload.payment?.amount_display || "-";
+        const isActiveBooking = Boolean(payload.booking?.active);
+        bookingState.textContent = isActiveBooking ? "Slot is currently booked" : "Slot is free";
+        localRemainingSeconds = payload.booking?.remaining_seconds;
+        startLocalCountdown();
+
+        const checkout = payload.stripe?.checkout_status || "unknown";
+        const pay = payload.stripe?.payment_status || "unknown";
+        stripeStatus.textContent = `${checkout} / ${pay}`;
+
+        if (payload.status === "succeeded") {
+          if (isActiveBooking) {
+            setStatus(payload.message || "Payment successful. Slot booked.", "ok");
+          } else {
+            setStatus("Payment successful. Booking time ended and slot is now free.", "ok");
+          }
+        } else if (payload.status === "failed") {
+          setStatus(payload.message || "Payment failed.", "err");
+        } else {
+          setStatus(payload.message || "Payment is processing...", "wait");
+        }
+      };
+
+      const pollStatus = async () => {
+        if (!sessionId) {
+          setStatus("Missing session id in URL.", "err");
+          return;
+        }
+
+        try {
+          const response = await fetch(`/api/payments/stripe/status?session_id=${encodeURIComponent(sessionId)}`);
+          const payload = await response.json().catch(() => ({}));
+
+          if (!response.ok) {
+            setStatus(payload.error || "Could not fetch payment status.", "err");
+            return;
+          }
+
+          renderPayload(payload);
+
+          if (!payload.is_final || payload.booking?.active) {
+            setTimeout(pollStatus, 3000);
+          }
+        } catch (_err) {
+          setStatus("Network error while checking status. Retrying...", "wait");
+          setTimeout(pollStatus, 3000);
+        }
+      };
+
+      pollStatus();
+    </script>
+  </body>
+</html>

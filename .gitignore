@@ -1,0 +1,36 @@
+# Environment and secrets
+.env
+.env.*
+!.env.example
+
+# Python virtual environments
+.venv/
+.venv310/
+venv/
+
+# Python cache and build artifacts
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+
+# OS/editor noise
+.DS_Store
+.vscode/
+
+# Local tooling metadata
+.agents/
+.claude/
+
+# Runtime/generated local data
+bookings.db
+outputs/
+uploads/
+data/
+
+# Optional local logs
+*.log
